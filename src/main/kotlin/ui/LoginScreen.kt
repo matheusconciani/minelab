@@ -3,6 +3,7 @@ package ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -11,9 +12,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import auth.MicrosoftAuthService
 import auth.MinecraftProfile
@@ -28,10 +32,19 @@ fun LoginScreen(
     onLoggedIn: (MinecraftProfile) -> Unit
 ) {
     var username by remember { mutableStateOf("") }
-    var isLoading by remember { mutableStateOf(false) }
+    var isMicrosoftLoading by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
+    var authJob by remember { mutableStateOf<Job?>(null) }
+
+    // Clean up coroutine when screen is disposed
+    DisposableEffect(Unit) {
+        onDispose {
+            authJob?.cancel()
+            authJob = null
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -47,7 +60,7 @@ fun LoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Entrar no Minecraft",
+                text = "Entrar no Minelab",
                 color = Color(0xFFDCE5DF),
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold
@@ -63,7 +76,7 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // Modo Local / Offline
+            // Modo Local / Offline: SEMPRE DISPONÍVEL E EDITÁVEL
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.Start
@@ -87,7 +100,7 @@ fun LoginScreen(
                         Text("Ex: Steve_01 (3 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
                     },
                     singleLine = true,
-                    enabled = !isLoading,
+                    enabled = true, // Nunca desabilita durante tentativa Microsoft
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color(0xFFDCE5DF),
@@ -109,6 +122,10 @@ fun LoginScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                val isUsernameValid = username.trim().run {
+                    length in 3..16 && MINECRAFT_USERNAME_REGEX.matches(this)
+                }
+
                 Button(
                     onClick = {
                         val trimmed = username.trim()
@@ -125,7 +142,12 @@ fun LoginScreen(
                             return@Button
                         }
 
-                        // Strictly validate and safely encode to prevent URL path traversal/manipulation
+                        // Cancel ongoing Microsoft auth if any before proceeding with local login
+                        authJob?.cancel()
+                        authJob = null
+                        isMicrosoftLoading = false
+                        statusMessage = ""
+
                         val safeEncodedName = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.toString())
                         val profile = MinecraftProfile(
                             id = trimmed,
@@ -134,7 +156,7 @@ fun LoginScreen(
                         )
                         onLoggedIn(profile)
                     },
-                    enabled = !isLoading && username.isNotBlank(),
+                    enabled = isUsernameValid, // Sempre habilitado se o nome for válido
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(44.dp),
@@ -172,32 +194,39 @@ fun LoginScreen(
             // Microsoft Login Button
             Button(
                 onClick = {
-                    isLoading = true
+                    if (isMicrosoftLoading) return@Button
+                    isMicrosoftLoading = true
                     errorMessage = null
                     statusMessage = "Iniciando login com a Microsoft..."
 
-                    coroutineScope.launch {
+                    authJob = coroutineScope.launch {
                         try {
                             val profile = MicrosoftAuthService.loginWithMicrosoft { msg ->
                                 statusMessage = msg
                             }
                             onLoggedIn(profile)
+                        } catch (e: CancellationException) {
+                            // Cancelamento explícito: não exibe mensagem de erro assustadora
+                            errorMessage = null
                         } catch (e: Exception) {
                             errorMessage = e.message ?: "Erro na autenticação com a Microsoft."
                         } finally {
-                            isLoading = false
+                            isMicrosoftLoading = false
                             statusMessage = ""
+                            authJob = null
                         }
                     }
                 },
-                enabled = !isLoading,
+                enabled = !isMicrosoftLoading, // Desabilita apenas a si próprio para evitar cliques simultâneos
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(46.dp),
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF0B252E),
-                    contentColor = Color(0xFFDCE5DF)
+                    contentColor = Color(0xFFDCE5DF),
+                    disabledContainerColor = Color(0xFF0B252E).copy(alpha = 0.5f),
+                    disabledContentColor = Color(0xFFDCE5DF).copy(alpha = 0.4f)
                 ),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF83B9AD).copy(alpha = 0.4f))
             ) {
@@ -226,8 +255,8 @@ fun LoginScreen(
                 }
             }
 
-            // Status or Error messages
-            AnimatedVisibility(visible = isLoading) {
+            // Status or Cancel option while Microsoft auth is running
+            AnimatedVisibility(visible = isMicrosoftLoading) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(top = 16.dp)
@@ -243,10 +272,30 @@ fun LoginScreen(
                         color = Color(0xFFDCE5DF).copy(alpha = 0.8f),
                         fontSize = 12.sp
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Explicit "Cancelar login Microsoft" button
+                    Text(
+                        text = "Cancelar login Microsoft",
+                        color = Color(0xFF83B9AD),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(role = Role.Button) {
+                                authJob?.cancel()
+                                authJob = null
+                                isMicrosoftLoading = false
+                                statusMessage = ""
+                                errorMessage = null
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
             }
 
-            AnimatedVisibility(visible = errorMessage != null) {
+            AnimatedVisibility(visible = errorMessage != null && !isMicrosoftLoading) {
                 Text(
                     text = errorMessage ?: "",
                     color = Color(0xFFFF7B7B),

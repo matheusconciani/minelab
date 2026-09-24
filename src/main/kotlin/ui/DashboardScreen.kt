@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,6 +41,9 @@ fun DashboardScreen(
                 ) {
                     onLogout()
                 }
+                .semantics {
+                    contentDescription = "Sair da conta ${profile.name}"
+                }
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -47,19 +52,20 @@ fun DashboardScreen(
                 horizontalAlignment = Alignment.End
             ) {
                 Text(
+                    text = "Logado como",
+                    color = Color(0xFFDCE5DF).copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Normal
+                )
+                Text(
                     text = profile.name,
                     color = Color(0xFFDCE5DF),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = if (profile.id == profile.name) "Conta Local (Sair)" else "Microsoft (Sair)",
-                    color = Color(0xFF83B9AD).copy(alpha = 0.8f),
-                    fontSize = 11.sp
-                )
             }
 
-            // 3D Isometric Skin Head
+            // 3D Isometric Skin Head positioned to the right of the text
             MinecraftHead3D(
                 skinUrl = profile.skinUrl,
                 playerName = profile.name,

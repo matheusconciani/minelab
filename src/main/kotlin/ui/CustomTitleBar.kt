@@ -1,7 +1,6 @@
 package ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,7 +25,7 @@ import androidx.compose.ui.window.WindowScope
 fun WindowScope.CustomTitleBar(
     onMinimize: () -> Unit,
     onClose: () -> Unit,
-    title: String = "Minecraft Launcher"
+    title: String = "Minelab"
 ) {
     WindowDraggableArea(
         modifier = Modifier
@@ -36,29 +35,19 @@ fun WindowScope.CustomTitleBar(
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Title
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color(0xFF83B9AD))
-                )
-                Text(
-                    text = title,
-                    color = Color(0xFFDCE5DF).copy(alpha = 0.9f),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.5.sp
-                )
-            }
+            // Title: exatamente "Minelab", sem ícones ou elementos decorativos adicionais,
+            // em cor escura de alto contraste sobre o gradiente claro.
+            Text(
+                text = title,
+                color = Color(0xFF031419).copy(alpha = 0.95f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.4.sp
+            )
 
             // Window controls: Minimize & Close (No maximize as specified)
             Row(
@@ -76,7 +65,7 @@ fun WindowScope.CustomTitleBar(
                     Icon(
                         imageVector = Icons.Default.Minimize,
                         contentDescription = "Minimizar",
-                        tint = Color(0xFFDCE5DF).copy(alpha = 0.8f),
+                        tint = Color(0xFF031419).copy(alpha = 0.85f),
                         modifier = Modifier.size(15.dp).padding(bottom = 6.dp)
                     )
                 }
@@ -92,7 +81,7 @@ fun WindowScope.CustomTitleBar(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Fechar",
-                        tint = Color(0xFFDCE5DF).copy(alpha = 0.8f),
+                        tint = Color(0xFF031419).copy(alpha = 0.85f),
                         modifier = Modifier.size(15.dp)
                     )
                 }

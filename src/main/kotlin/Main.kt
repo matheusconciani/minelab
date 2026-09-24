@@ -45,7 +45,7 @@ fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
         state = windowState,
-        title = "Minecraft Launcher",
+        title = "Minelab",
         undecorated = true,
         resizable = false
     ) {

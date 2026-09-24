@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.HttpClientFactory
+import okhttp3.Call
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -25,6 +26,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import java.io.IOException
 
 data class MinecraftProfile(
     val id: String,
@@ -33,20 +35,27 @@ data class MinecraftProfile(
 )
 
 object MicrosoftAuthService {
-    // Azure App Client ID. Can be configured via environment variable `MINELAB_AZURE_CLIENT_ID`
-    // Default fallback to standard public client ID for desktop OAuth
-    private val CLIENT_ID: String = System.getenv("MINELAB_AZURE_CLIENT_ID")
-        ?.takeIf { it.isNotBlank() }
-        ?: "00000000402b5328"
+    // Configurable Azure App Client ID.
+    // If not set, prompts the user to configure MINELAB_AZURE_CLIENT_ID
+    val CLIENT_ID: String? = System.getenv("MINELAB_AZURE_CLIENT_ID")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
 
-    private const val REDIRECT_PORT = 28549
-    private const val REDIRECT_URI = "http://localhost:$REDIRECT_PORT/callback"
+    const val REDIRECT_PORT = 28549
+    const val REDIRECT_URI = "http://localhost:$REDIRECT_PORT/callback"
     private const val SCOPES = "XboxLive.signin offline_access"
 
     private val json = Json { ignoreUnknownKeys = true }
     private val secureRandom = SecureRandom()
 
     suspend fun loginWithMicrosoft(onStatus: (String) -> Unit = {}): MinecraftProfile = withContext(Dispatchers.IO) {
+        val clientId = CLIENT_ID
+        if (clientId.isNullOrBlank()) {
+            throw IllegalStateException(
+                "ID do cliente Azure não configurado. Por favor, defina a variável de ambiente MINELAB_AZURE_CLIENT_ID com o Application (Client) ID registrado no portal da Microsoft/Azure."
+            )
+        }
+
         // Generate random state and PKCE code verifier / challenge
         val state = generateRandomString(32)
         val codeVerifier = generateRandomString(64)
@@ -55,14 +64,14 @@ object MicrosoftAuthService {
         onStatus("Abrindo o navegador para autenticação...")
         val authCode = try {
             withTimeout(120_000L) { // 2 minutes timeout
-                waitForAuthCode(expectedState = state, codeChallenge = codeChallenge)
+                waitForAuthCode(clientId = clientId, expectedState = state, codeChallenge = codeChallenge)
             }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             throw IllegalStateException("A autenticação expirou. Por favor, tente novamente.")
         }
 
         onStatus("Validando autorização da Microsoft...")
-        val msToken = exchangeAuthCodeForMicrosoftToken(authCode, codeVerifier)
+        val msToken = exchangeAuthCodeForMicrosoftToken(clientId, authCode, codeVerifier)
 
         onStatus("Autenticando no Xbox Live...")
         val xblToken = authenticateXboxLive(msToken)
@@ -80,18 +89,16 @@ object MicrosoftAuthService {
         fetchMinecraftProfile(mcToken)
     }
 
-    private suspend fun waitForAuthCode(expectedState: String, codeChallenge: String): String =
+    private suspend fun waitForAuthCode(clientId: String, expectedState: String, codeChallenge: String): String =
         suspendCancellableCoroutine { continuation ->
             val isCompleted = AtomicBoolean(false)
             var server: HttpServer? = null
 
             fun safeCloseServer() {
-                Thread {
-                    try {
-                        Thread.sleep(300)
-                        server?.stop(0)
-                    } catch (_: Exception) {}
-                }.start()
+                try {
+                    server?.stop(0)
+                    server = null
+                } catch (_: Exception) {}
             }
 
             try {
@@ -111,7 +118,6 @@ object MicrosoftAuthService {
                         val receivedState = params["state"]
                         val code = params["code"]
                         val error = params["error"]
-                        val errorDesc = params["error_description"]
 
                         val isSuccess = code != null && receivedState == expectedState
 
@@ -166,8 +172,9 @@ object MicrosoftAuthService {
                 val encodedState = URLEncoder.encode(expectedState, StandardCharsets.UTF_8.toString())
                 val encodedChallenge = URLEncoder.encode(codeChallenge, StandardCharsets.UTF_8.toString())
 
-                val loginUrl = "https://login.live.com/oauth20_authorize.srf" +
-                        "?client_id=$CLIENT_ID" +
+                // Using standard common /consumers tenant for personal Microsoft accounts
+                val loginUrl = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize" +
+                        "?client_id=$clientId" +
                         "&response_type=code" +
                         "&redirect_uri=$encodedRedirect" +
                         "&scope=$encodedScope" +
@@ -199,9 +206,41 @@ object MicrosoftAuthService {
             }
         }
 
-    private fun exchangeAuthCodeForMicrosoftToken(code: String, codeVerifier: String): String {
+    private suspend fun executeRequestCancellable(request: Request): String = suspendCancellableCoroutine { cont ->
+        val call: Call = HttpClientFactory.client.newCall(request)
+        cont.invokeOnCancellation {
+            call.cancel()
+        }
+
+        call.enqueue(object : okhttp3.Callback {
+            override fun onResponse(call: Call, response: okhttp3.Response) {
+                response.use { res ->
+                    if (!res.isSuccessful) {
+                        cont.resumeWithException(
+                            IllegalStateException("Serviço de autenticação retornou código HTTP ${res.code}.")
+                        )
+                        return
+                    }
+                    val body = res.body?.string()
+                    if (body.isNullOrBlank()) {
+                        cont.resumeWithException(IllegalStateException("Resposta vazia do servidor."))
+                    } else {
+                        cont.resume(body)
+                    }
+                }
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                if (!cont.isCancelled) {
+                    cont.resumeWithException(e)
+                }
+            }
+        })
+    }
+
+    private suspend fun exchangeAuthCodeForMicrosoftToken(clientId: String, code: String, codeVerifier: String): String {
         val form = FormBody.Builder()
-            .add("client_id", CLIENT_ID)
+            .add("client_id", clientId)
             .add("code", code)
             .add("grant_type", "authorization_code")
             .add("redirect_uri", REDIRECT_URI)
@@ -209,30 +248,33 @@ object MicrosoftAuthService {
             .build()
 
         val request = Request.Builder()
-            .url("https://login.live.com/oauth20_token.srf")
+            .url("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
             .post(form)
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Não foi possível trocar o código de autorização da Microsoft.")
-            }
-            val body = response.body?.string() ?: throw IllegalStateException("Resposta vazia da Microsoft.")
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-                throw IllegalStateException("Resposta inválida dos servidores da Microsoft.")
-            }
-            return element["access_token"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("Token de acesso não encontrado na resposta da Microsoft.")
+        val body = exchangeRequestWithHandling(request, "Não foi possível validar o código de autorização na Microsoft.")
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
+            throw IllegalStateException("Resposta inválida dos servidores da Microsoft.")
+        }
+        return element["access_token"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Token de acesso não encontrado na resposta da Microsoft.")
+    }
+
+    private suspend fun exchangeRequestWithHandling(request: Request, fallbackError: String): String {
+        return try {
+            executeRequestCancellable(request)
+        } catch (e: Exception) {
+            throw if (e is IllegalStateException) e else IllegalStateException(fallbackError)
         }
     }
 
-    private fun authenticateXboxLive(msToken: String): String {
+    private suspend fun authenticateXboxLive(msToken: String): String {
         val jsonPayload = """
             {
                 "Properties": {
                     "AuthMethod": "RPS",
                     "SiteName": "user.auth.xboxlive.com",
-                    "RpsTicket": "$msToken"
+                    "RpsTicket": "d=$msToken"
                 },
                 "RelyingParty": "http://auth.xboxlive.com",
                 "TokenType": "JWT"
@@ -246,20 +288,15 @@ object MicrosoftAuthService {
             .addHeader("Accept", "application/json")
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Falha na comunicação com os serviços Xbox Live.")
-            }
-            val body = response.body?.string() ?: throw IllegalStateException("Resposta vazia do Xbox Live.")
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-                throw IllegalStateException("Resposta inválida do serviço Xbox Live.")
-            }
-            return element["Token"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("Token Xbox Live não recebido.")
+        val body = exchangeRequestWithHandling(request, "Falha na comunicação com os serviços Xbox Live.")
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
+            throw IllegalStateException("Resposta inválida do serviço Xbox Live.")
         }
+        return element["Token"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Token Xbox Live não recebido.")
     }
 
-    private fun authenticateXSTS(xblToken: String): Pair<String, String> {
+    private suspend fun authenticateXSTS(xblToken: String): Pair<String, String> {
         val jsonPayload = """
             {
                 "Properties": {
@@ -278,28 +315,20 @@ object MicrosoftAuthService {
             .addHeader("Accept", "application/json")
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (response.code == 401) {
-                throw IllegalStateException("Conta Microsoft sem conta Xbox vinculada ou bloqueada por controle dos pais.")
-            }
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Não foi possível autorizar o serviço XSTS da conta Xbox.")
-            }
-            val body = response.body?.string() ?: throw IllegalStateException("Resposta vazia do serviço XSTS.")
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-                throw IllegalStateException("Resposta inválida do serviço XSTS.")
-            }
-            val token = element["Token"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("Token XSTS ausente.")
-            val uhs = element["DisplayClaims"]?.jsonObject
-                ?.get("xui")?.let { runCatching { json.parseToJsonElement(it.toString()) }.getOrNull() }
-                ?.let { (it as? kotlinx.serialization.json.JsonArray)?.firstOrNull()?.jsonObject?.get("uhs")?.jsonPrimitive?.content }
-                ?: throw IllegalStateException("Identificador de usuário do Xbox ausente.")
-            return Pair(token, uhs)
+        val body = exchangeRequestWithHandling(request, "Não foi possível autorizar o serviço XSTS da conta Xbox.")
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
+            throw IllegalStateException("Resposta inválida do serviço XSTS.")
         }
+        val token = element["Token"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Token XSTS ausente.")
+        val uhs = element["DisplayClaims"]?.jsonObject
+            ?.get("xui")?.let { runCatching { json.parseToJsonElement(it.toString()) }.getOrNull() }
+            ?.let { (it as? kotlinx.serialization.json.JsonArray)?.firstOrNull()?.jsonObject?.get("uhs")?.jsonPrimitive?.content }
+            ?: throw IllegalStateException("Identificador de usuário do Xbox ausente.")
+        return Pair(token, uhs)
     }
 
-    private fun authenticateMinecraft(xstsToken: String, uhs: String): String {
+    private suspend fun authenticateMinecraft(xstsToken: String, uhs: String): String {
         val jsonPayload = """
             {
                 "identityToken": "XBL3.0 x=$uhs;$xstsToken"
@@ -313,73 +342,67 @@ object MicrosoftAuthService {
             .addHeader("Accept", "application/json")
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Não foi possível autenticar a conta nos servidores do Minecraft.")
-            }
-            val body = response.body?.string() ?: throw IllegalStateException("Resposta vazia dos serviços Minecraft.")
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-                throw IllegalStateException("Resposta inválida dos serviços Minecraft.")
-            }
-            return element["access_token"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("Token de acesso do Minecraft não encontrado.")
+        val body = exchangeRequestWithHandling(request, "Não foi possível autenticar a conta nos servidores do Minecraft.")
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
+            throw IllegalStateException("Resposta inválida dos serviços Minecraft.")
         }
+        return element["access_token"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Token de acesso do Minecraft não encontrado.")
     }
 
-    private fun verifyGameOwnership(mcAccessToken: String) {
+    private suspend fun verifyGameOwnership(mcAccessToken: String) {
         val request = Request.Builder()
             .url("https://api.minecraftservices.com/entitlements/mcstore")
             .get()
             .addHeader("Authorization", "Bearer $mcAccessToken")
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                // If entitlements endpoint fails or returns error, check profile will be definitive
-                return
-            }
-            val body = response.body?.string() ?: return
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return
-            val items = element["items"] as? kotlinx.serialization.json.JsonArray
-            val ownsGame = items?.any {
-                val name = it.jsonObject["name"]?.jsonPrimitive?.content
-                name == "product_minecraft" || name == "game_minecraft"
-            } ?: false
+        val body = try {
+            executeRequestCancellable(request)
+        } catch (_: Exception) {
+            // Entitlements endpoint error does not block profile check
+            return
+        }
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return
+        val items = element["items"] as? kotlinx.serialization.json.JsonArray
+        val ownsGame = items?.any {
+            val name = it.jsonObject["name"]?.jsonPrimitive?.content
+            name == "product_minecraft" || name == "game_minecraft"
+        } ?: false
 
-            if (items != null && items.isNotEmpty() && !ownsGame) {
-                throw IllegalStateException("Esta conta Microsoft não possui uma licença do Minecraft Java Edition.")
-            }
+        if (items != null && items.isNotEmpty() && !ownsGame) {
+            throw IllegalStateException("Esta conta Microsoft não possui uma licença do Minecraft Java Edition.")
         }
     }
 
-    private fun fetchMinecraftProfile(mcAccessToken: String): MinecraftProfile {
+    private suspend fun fetchMinecraftProfile(mcAccessToken: String): MinecraftProfile {
         val request = Request.Builder()
             .url("https://api.minecraftservices.com/minecraft/profile")
             .get()
             .addHeader("Authorization", "Bearer $mcAccessToken")
             .build()
 
-        HttpClientFactory.client.newCall(request).execute().use { response ->
-            if (response.code == 404) {
+        val body = try {
+            executeRequestCancellable(request)
+        } catch (e: Exception) {
+            if (e.message?.contains("404") == true) {
                 throw IllegalStateException("Esta conta Microsoft não possui o Minecraft Java ou nenhum perfil criado.")
             }
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Não foi possível carregar o perfil de jogador do Minecraft.")
-            }
-            val body = response.body?.string() ?: throw IllegalStateException("Resposta vazia do perfil do Minecraft.")
-            val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-                throw IllegalStateException("Resposta inválida do perfil do Minecraft.")
-            }
-            val id = element["id"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("ID do perfil do Minecraft não encontrado.")
-            val name = element["name"]?.jsonPrimitive?.content
-                ?: throw IllegalStateException("Nome do jogador não encontrado.")
-            val skins = element["skins"] as? kotlinx.serialization.json.JsonArray
-            val activeSkin = skins?.firstOrNull { it.jsonObject["state"]?.jsonPrimitive?.content == "ACTIVE" }
-                ?: skins?.firstOrNull()
-            val skinUrl = activeSkin?.jsonObject?.get("url")?.jsonPrimitive?.content
-            return MinecraftProfile(id = id, name = name, skinUrl = skinUrl)
+            throw IllegalStateException("Não foi possível carregar o perfil de jogador do Minecraft.")
         }
+
+        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
+            throw IllegalStateException("Resposta inválida do perfil do Minecraft.")
+        }
+        val id = element["id"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("ID do perfil do Minecraft não encontrado.")
+        val name = element["name"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Nome do jogador não encontrado.")
+        val skins = element["skins"] as? kotlinx.serialization.json.JsonArray
+        val activeSkin = skins?.firstOrNull { it.jsonObject["state"]?.jsonPrimitive?.content == "ACTIVE" }
+            ?: skins?.firstOrNull()
+        val skinUrl = activeSkin?.jsonObject?.get("url")?.jsonPrimitive?.content
+        return MinecraftProfile(id = id, name = name, skinUrl = skinUrl)
     }
 
     private fun generateRandomString(length: Int): String {
