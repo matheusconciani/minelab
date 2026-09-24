@@ -1,9 +1,10 @@
 package auth
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.HttpClientFactory
@@ -12,21 +13,10 @@ import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.awt.Desktop
-import java.net.InetSocketAddress
-import java.net.URI
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import java.security.SecureRandom
-import java.util.Base64
-import java.util.concurrent.atomic.AtomicBoolean
-import com.sun.net.httpserver.HttpServer
+import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
-import java.io.IOException
 
 data class MinecraftProfile(
     val id: String,
@@ -42,38 +32,82 @@ object MicrosoftAuthService {
         ?.takeIf { it.isNotEmpty() }
         ?: "8d8cf468-fbf0-486c-9553-5277622126ef"
 
-    const val REDIRECT_PORT = 28549
-    const val REDIRECT_URI = "http://localhost:$REDIRECT_PORT/callback"
     private const val SCOPES = "XboxLive.signin offline_access"
+    private const val DEVICE_CODE_ENDPOINT =
+        "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
+    private const val TOKEN_ENDPOINT =
+        "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val secureRandom = SecureRandom()
 
-    suspend fun loginWithMicrosoft(onStatus: (String) -> Unit = {}): MinecraftProfile = withContext(Dispatchers.IO) {
+    /**
+     * Authenticates via OAuth 2.0 Device Code Flow (no redirect URI / local HTTP server required).
+     *
+     * @param onStatus  Called with human-readable progress messages (UI status).
+     * @param onDeviceCode  Called when the device code step succeeds, providing the user code and
+     *                      verification URI so the UI can display them and let the user open the
+     *                      browser and copy the code.
+     */
+    suspend fun loginWithMicrosoft(
+        onStatus: (String) -> Unit = {},
+        onDeviceCode: ((userCode: String, verificationUri: String) -> Unit)? = null
+    ): MinecraftProfile = withContext(Dispatchers.IO) {
         val clientId = CLIENT_ID
-        if (clientId.isNullOrBlank()) {
-            throw IllegalStateException(
-                "ID do cliente Azure não configurado. Por favor, defina a variável de ambiente MINELAB_AZURE_CLIENT_ID com o Application (Client) ID registrado no portal da Microsoft/Azure."
-            )
-        }
 
-        // Generate random state and PKCE code verifier / challenge
-        val state = generateRandomString(32)
-        val codeVerifier = generateRandomString(64)
-        val codeChallenge = generateCodeChallenge(codeVerifier)
+        // ── Step 1: Request device code ──────────────────────────────────────
+        onStatus("Solicitando código de autenticação...")
 
-        onStatus("Abrindo o navegador para autenticação...")
-        val authCode = try {
-            withTimeout(120_000L) { // 2 minutes timeout
-                waitForAuthCode(clientId = clientId, expectedState = state, codeChallenge = codeChallenge)
+        val deviceCodeForm = FormBody.Builder()
+            .add("client_id", clientId)
+            .add("scope", SCOPES)
+            .build()
+
+        val deviceCodeRequest = Request.Builder()
+            .url(DEVICE_CODE_ENDPOINT)
+            .post(deviceCodeForm)
+            .build()
+
+        val deviceCodeBody = executeRequestCancellable(deviceCodeRequest)
+        val deviceCodeJson = runCatching { json.parseToJsonElement(deviceCodeBody).jsonObject }
+            .getOrElse { throw IllegalStateException("Resposta inválida ao solicitar código de dispositivo.") }
+
+        // Surface any device code endpoint errors
+        deviceCodeJson["error"]?.jsonPrimitive?.content?.let { err ->
+            val desc = deviceCodeJson["error_description"]?.jsonPrimitive?.content ?: ""
+            val msg = when {
+                err == "invalid_client" && "mobile" in desc ->
+                    "O aplicativo não está configurado para fluxo de código de dispositivo. " +
+                    "Ative 'Allow public client flows' no portal Azure."
+                err == "unauthorized_client" ->
+                    "Aplicativo não autorizado para este fluxo. Verifique o registro no Azure."
+                else -> "Erro ao iniciar autenticação Microsoft. Tente novamente."
             }
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            throw IllegalStateException("A autenticação expirou. Por favor, tente novamente.")
+            throw IllegalStateException(msg)
         }
 
-        onStatus("Validando autorização da Microsoft...")
-        val msToken = exchangeAuthCodeForMicrosoftToken(clientId, authCode, codeVerifier)
+        val deviceCode = deviceCodeJson["device_code"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Código de dispositivo não recebido da Microsoft.")
+        val userCode = deviceCodeJson["user_code"]?.jsonPrimitive?.content
+            ?: throw IllegalStateException("Código de usuário não recebido da Microsoft.")
+        val verificationUri = deviceCodeJson["verification_uri"]?.jsonPrimitive?.content
+            ?: deviceCodeJson["verification_url"]?.jsonPrimitive?.content
+            ?: "https://microsoft.com/link"
+        val expiresIn = deviceCodeJson["expires_in"]?.jsonPrimitive?.content?.toLongOrNull() ?: 900L
+        val pollIntervalSec = deviceCodeJson["interval"]?.jsonPrimitive?.content?.toLongOrNull() ?: 5L
 
+        // Notify UI so it can show the code
+        onDeviceCode?.invoke(userCode, verificationUri)
+        onStatus("Aguardando autorização no navegador...")
+
+        // ── Step 2: Poll for token ────────────────────────────────────────────
+        val msToken = pollForToken(
+            clientId = clientId,
+            deviceCode = deviceCode,
+            pollIntervalMs = pollIntervalSec * 1000L,
+            expiresInMs = expiresIn * 1000L
+        )
+
+        // ── Step 3: Xbox Live → XSTS → Minecraft Services ───────────────────
         onStatus("Autenticando no Xbox Live...")
         val xblToken = authenticateXboxLive(msToken)
 
@@ -90,176 +124,140 @@ object MicrosoftAuthService {
         fetchMinecraftProfile(mcToken)
     }
 
-    private suspend fun waitForAuthCode(clientId: String, expectedState: String, codeChallenge: String): String =
-        suspendCancellableCoroutine { continuation ->
-            val isCompleted = AtomicBoolean(false)
-            var server: HttpServer? = null
+    /**
+     * Polls the token endpoint until authorization is complete, expired, or denied.
+     * Respects coroutine cancellation — cancelling the parent Job stops polling immediately.
+     */
+    private suspend fun pollForToken(
+        clientId: String,
+        deviceCode: String,
+        pollIntervalMs: Long,
+        expiresInMs: Long
+    ): String = withContext(Dispatchers.IO) {
+        val deadline = System.currentTimeMillis() + expiresInMs
+        var currentIntervalMs = pollIntervalMs
 
-            fun safeCloseServer() {
-                try {
-                    server?.stop(0)
-                    server = null
-                } catch (_: Exception) {}
+        while (isActive) {
+            delay(currentIntervalMs)
+
+            if (System.currentTimeMillis() >= deadline) {
+                throw IllegalStateException("O código expirou. Por favor, tente novamente.")
             }
 
-            try {
-                server = HttpServer.create(InetSocketAddress("localhost", REDIRECT_PORT), 0)
-                server.createContext("/callback") { exchange ->
-                    try {
-                        val query = exchange.requestURI.query ?: ""
-                        val params = query.split("&").mapNotNull {
-                            val parts = it.split("=")
-                            if (parts.isNotEmpty()) {
-                                val key = java.net.URLDecoder.decode(parts[0], StandardCharsets.UTF_8.toString())
-                                val value = if (parts.size > 1) java.net.URLDecoder.decode(parts[1], StandardCharsets.UTF_8.toString()) else ""
-                                key to value
-                            } else null
-                        }.toMap()
+            val form = FormBody.Builder()
+                .add("client_id", clientId)
+                .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+                .add("device_code", deviceCode)
+                .build()
 
-                        val receivedState = params["state"]
-                        val code = params["code"]
-                        val error = params["error"]
+            val request = Request.Builder()
+                .url(TOKEN_ENDPOINT)
+                .post(form)
+                .build()
 
-                        val isSuccess = code != null && receivedState == expectedState
+            // Execute HTTP call in a cancellable way
+            val responseBody: String = try {
+                executeRequestRaw(request)
+            } catch (e: IOException) {
+                // Network blip — retry on next interval
+                continue
+            }
 
-                        val html = if (isSuccess) {
-                            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Sucesso</title></head>" +
-                            "<body style='font-family:system-ui,sans-serif;text-align:center;padding:50px;background:#031419;color:#dce5df;'>" +
-                            "<h2 style='color:#83b9ad;'>Autenticado com sucesso!</h2>" +
-                            "<p>Você já pode fechar esta janela e voltar para o aplicativo.</p></body></html>"
+            val responseJson = runCatching { json.parseToJsonElement(responseBody).jsonObject }
+                .getOrNull() ?: continue
+
+            val accessToken = responseJson["access_token"]?.jsonPrimitive?.content
+            if (!accessToken.isNullOrBlank()) {
+                return@withContext accessToken
+            }
+
+            val error = responseJson["error"]?.jsonPrimitive?.content ?: continue
+
+            when (error) {
+                "authorization_pending" -> {
+                    // Normal — user hasn't completed auth yet; keep polling
+                }
+                "slow_down" -> {
+                    // Server requests slower polling
+                    currentIntervalMs += 5_000L
+                }
+                "authorization_declined" -> {
+                    throw IllegalStateException("O acesso foi recusado. Tente novamente.")
+                }
+                "expired_token" -> {
+                    throw IllegalStateException("O código expirou. Por favor, tente novamente.")
+                }
+                else -> {
+                    throw IllegalStateException("Erro na autenticação Microsoft. Tente novamente.")
+                }
+            }
+        }
+
+        // Coroutine was cancelled — throw CancellationException to propagate cancel cleanly
+        throw kotlinx.coroutines.CancellationException("Login Microsoft cancelado.")
+    }
+
+    // ── HTTP helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Executes an OkHttp request in a cancellable coroutine, returning body on 2xx.
+     * Throws [IllegalStateException] on non-2xx HTTP or empty body.
+     */
+    private suspend fun executeRequestCancellable(request: Request): String =
+        suspendCancellableCoroutine { cont ->
+            val call: Call = HttpClientFactory.client.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
+
+            call.enqueue(object : okhttp3.Callback {
+                override fun onResponse(call: Call, response: okhttp3.Response) {
+                    response.use { res ->
+                        if (!res.isSuccessful) {
+                            cont.resumeWithException(
+                                IllegalStateException("Serviço de autenticação retornou código HTTP ${res.code}.")
+                            )
+                            return
+                        }
+                        val body = res.body?.string()
+                        if (body.isNullOrBlank()) {
+                            cont.resumeWithException(IllegalStateException("Resposta vazia do servidor."))
                         } else {
-                            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Erro</title></head>" +
-                            "<body style='font-family:system-ui,sans-serif;text-align:center;padding:50px;background:#031419;color:#dce5df;'>" +
-                            "<h2 style='color:#ff7b7b;'>Falha na autenticação</h2>" +
-                            "<p>A autenticação não pôde ser concluída. Pode fechar esta janela.</p></body></html>"
-                        }
-
-                        val responseBytes = html.toByteArray(StandardCharsets.UTF_8)
-                        exchange.responseHeaders.set("Content-Type", "text/html; charset=UTF-8")
-                        exchange.sendResponseHeaders(200, responseBytes.size.toLong())
-                        exchange.responseBody.write(responseBytes)
-                        exchange.responseBody.close()
-
-                        if (isCompleted.compareAndSet(false, true)) {
-                            safeCloseServer()
-                            if (code != null) {
-                                if (receivedState != expectedState) {
-                                    continuation.resumeWithException(
-                                        IllegalStateException("Falha na validação de segurança do estado OAuth.")
-                                    )
-                                } else {
-                                    continuation.resume(code)
-                                }
-                            } else {
-                                val userMessage = when (error) {
-                                    "access_denied" -> "O login foi cancelado pelo usuário."
-                                    "invalid_request" -> "Configuração de redirecionamento ou credencial inválida no servidor da Microsoft."
-                                    else -> "Autenticação não autorizada ou cancelada."
-                                }
-                                continuation.resumeWithException(IllegalStateException(userMessage))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        if (isCompleted.compareAndSet(false, true)) {
-                            safeCloseServer()
-                            continuation.resumeWithException(e)
+                            cont.resume(body)
                         }
                     }
                 }
-                server.start()
 
-                val encodedRedirect = URLEncoder.encode(REDIRECT_URI, StandardCharsets.UTF_8.toString())
-                val encodedScope = URLEncoder.encode(SCOPES, StandardCharsets.UTF_8.toString())
-                val encodedState = URLEncoder.encode(expectedState, StandardCharsets.UTF_8.toString())
-                val encodedChallenge = URLEncoder.encode(codeChallenge, StandardCharsets.UTF_8.toString())
-
-                // Using standard common /consumers tenant for personal Microsoft accounts
-                val loginUrl = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize" +
-                        "?client_id=$clientId" +
-                        "&response_type=code" +
-                        "&redirect_uri=$encodedRedirect" +
-                        "&scope=$encodedScope" +
-                        "&state=$encodedState" +
-                        "&code_challenge=$encodedChallenge" +
-                        "&code_challenge_method=S256"
-
-                if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                    Desktop.getDesktop().browse(URI(loginUrl))
-                } else {
-                    val os = System.getProperty("os.name").lowercase()
-                    if (os.contains("win")) {
-                        ProcessBuilder("rundll32", "url.dll,FileProtocolHandler", loginUrl).start()
-                    }
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!cont.isCancelled) cont.resumeWithException(e)
                 }
-            } catch (e: Exception) {
-                if (isCompleted.compareAndSet(false, true)) {
-                    safeCloseServer()
-                    continuation.resumeWithException(
-                        IllegalStateException("Não foi possível iniciar o receptor de login local: ${e.message}")
-                    )
-                }
-            }
-
-            continuation.invokeOnCancellation {
-                if (isCompleted.compareAndSet(false, true)) {
-                    safeCloseServer()
-                }
-            }
+            })
         }
 
-    private suspend fun executeRequestCancellable(request: Request): String = suspendCancellableCoroutine { cont ->
-        val call: Call = HttpClientFactory.client.newCall(request)
-        cont.invokeOnCancellation {
-            call.cancel()
-        }
+    /**
+     * Like [executeRequestCancellable] but does NOT throw on non-2xx, returning the raw body
+     * instead. Used for polling where error semantics are encoded in the JSON body.
+     */
+    private suspend fun executeRequestRaw(request: Request): String =
+        suspendCancellableCoroutine { cont ->
+            val call: Call = HttpClientFactory.client.newCall(request)
+            cont.invokeOnCancellation { call.cancel() }
 
-        call.enqueue(object : okhttp3.Callback {
-            override fun onResponse(call: Call, response: okhttp3.Response) {
-                response.use { res ->
-                    if (!res.isSuccessful) {
-                        cont.resumeWithException(
-                            IllegalStateException("Serviço de autenticação retornou código HTTP ${res.code}.")
-                        )
-                        return
-                    }
-                    val body = res.body?.string()
-                    if (body.isNullOrBlank()) {
-                        cont.resumeWithException(IllegalStateException("Resposta vazia do servidor."))
-                    } else {
-                        cont.resume(body)
+            call.enqueue(object : okhttp3.Callback {
+                override fun onResponse(call: Call, response: okhttp3.Response) {
+                    response.use { res ->
+                        val body = res.body?.string()
+                        if (body.isNullOrBlank()) {
+                            cont.resumeWithException(IOException("Resposta vazia do servidor de token."))
+                        } else {
+                            cont.resume(body)
+                        }
                     }
                 }
-            }
 
-            override fun onFailure(call: Call, e: IOException) {
-                if (!cont.isCancelled) {
-                    cont.resumeWithException(e)
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!cont.isCancelled) cont.resumeWithException(e)
                 }
-            }
-        })
-    }
-
-    private suspend fun exchangeAuthCodeForMicrosoftToken(clientId: String, code: String, codeVerifier: String): String {
-        val form = FormBody.Builder()
-            .add("client_id", clientId)
-            .add("code", code)
-            .add("grant_type", "authorization_code")
-            .add("redirect_uri", REDIRECT_URI)
-            .add("code_verifier", codeVerifier)
-            .build()
-
-        val request = Request.Builder()
-            .url("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
-            .post(form)
-            .build()
-
-        val body = exchangeRequestWithHandling(request, "Não foi possível validar o código de autorização na Microsoft.")
-        val element = runCatching { json.parseToJsonElement(body).jsonObject }.getOrElse {
-            throw IllegalStateException("Resposta inválida dos servidores da Microsoft.")
+            })
         }
-        return element["access_token"]?.jsonPrimitive?.content
-            ?: throw IllegalStateException("Token de acesso não encontrado na resposta da Microsoft.")
-    }
 
     private suspend fun exchangeRequestWithHandling(request: Request, fallbackError: String): String {
         return try {
@@ -268,6 +266,8 @@ object MicrosoftAuthService {
             throw if (e is IllegalStateException) e else IllegalStateException(fallbackError)
         }
     }
+
+    // ── Xbox Live / XSTS / Minecraft auth chain (unchanged) ─────────────────
 
     private suspend fun authenticateXboxLive(msToken: String): String {
         val jsonPayload = """
@@ -404,17 +404,5 @@ object MicrosoftAuthService {
             ?: skins?.firstOrNull()
         val skinUrl = activeSkin?.jsonObject?.get("url")?.jsonPrimitive?.content
         return MinecraftProfile(id = id, name = name, skinUrl = skinUrl)
-    }
-
-    private fun generateRandomString(length: Int): String {
-        val bytes = ByteArray(length)
-        secureRandom.nextBytes(bytes)
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-    }
-
-    private fun generateCodeChallenge(codeVerifier: String): String {
-        val bytes = codeVerifier.toByteArray(StandardCharsets.US_ASCII)
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
     }
 }
