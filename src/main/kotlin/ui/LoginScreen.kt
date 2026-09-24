@@ -27,8 +27,8 @@ import auth.MinecraftProfile
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
-// Minecraft Java username: mais de 3 e menos de 17 caracteres (entre 4 e 16 caracteres), alfanumérico e sublinhados
-private val MINECRAFT_USERNAME_REGEX = Regex("^[a-zA-Z0-9_]{4,16}$")
+// Minecraft Java username: maior que 2 e menor que 17 caracteres (entre 3 e 16 caracteres), alfanumérico e sublinhados
+private val MINECRAFT_USERNAME_REGEX = Regex("^[a-zA-Z0-9_]{3,16}$")
 
 @Composable
 fun LoginScreen(
@@ -59,8 +59,8 @@ fun LoginScreen(
             errorMessage = "Por favor, digite um nome de usuário."
             return
         }
-        if (trimmed.length < 4 || trimmed.length > 16) {
-            errorMessage = "O nome deve ter entre 4 e 16 caracteres."
+        if (trimmed.length < 3 || trimmed.length > 16) {
+            errorMessage = "O nome deve ter entre 3 e 16 caracteres."
             return
         }
         if (!MINECRAFT_USERNAME_REGEX.matches(trimmed)) {
@@ -136,7 +136,7 @@ fun LoginScreen(
                         errorMessage = null
                     },
                     placeholder = {
-                        Text("Ex: Steve_01 (4 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
+                        Text("Ex: Steve_01 (3 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
                     },
                     singleLine = true,
                     enabled = !isLocalLoggingIn, // Continua editável durante tentativa Microsoft
@@ -160,7 +160,7 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 val isUsernameValid = username.trim().run {
-                    length in 4..16 && MINECRAFT_USERNAME_REGEX.matches(this)
+                    length in 3..16 && MINECRAFT_USERNAME_REGEX.matches(this)
                 }
 
                 Button(
