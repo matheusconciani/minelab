@@ -35,11 +35,12 @@ data class MinecraftProfile(
 )
 
 object MicrosoftAuthService {
-    // Configurable Azure App Client ID.
-    // If not set, prompts the user to configure MINELAB_AZURE_CLIENT_ID
-    val CLIENT_ID: String? = System.getenv("MINELAB_AZURE_CLIENT_ID")
+    // Azure App Client ID from Azure App Registration (microsoft.txt)
+    // Allows overriding via MINELAB_AZURE_CLIENT_ID environment variable
+    val CLIENT_ID: String = System.getenv("MINELAB_AZURE_CLIENT_ID")
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
+        ?: "8d8cf468-fbf0-486c-9553-5277622126ef"
 
     const val REDIRECT_PORT = 28549
     const val REDIRECT_URI = "http://localhost:$REDIRECT_PORT/callback"
