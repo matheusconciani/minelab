@@ -14,9 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -26,8 +24,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import auth.MicrosoftAuthService
 import auth.MinecraftProfile
-import java.awt.Desktop
-import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -45,12 +41,6 @@ fun LoginScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var authJob by remember { mutableStateOf<Job?>(null) }
-
-    // Device Code Flow UI state
-    var deviceUserCode by remember { mutableStateOf<String?>(null) }
-    var deviceVerificationUri by remember { mutableStateOf<String?>(null) }
-
-    val clipboard = LocalClipboardManager.current
 
     // Clean up coroutine when screen is disposed
     DisposableEffect(Unit) {
@@ -84,8 +74,6 @@ fun LoginScreen(
         authJob?.cancel()
         authJob = null
         isMicrosoftLoading = false
-        deviceUserCode = null
-        deviceVerificationUri = null
         statusMessage = ""
 
         val safeEncodedName = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.toString())
@@ -220,27 +208,13 @@ fun LoginScreen(
                     if (isMicrosoftLoading || isLocalLoggingIn) return@Button
                     isMicrosoftLoading = true
                     errorMessage = null
-                    deviceUserCode = null
-                    deviceVerificationUri = null
                     statusMessage = "Iniciando login com a Microsoft..."
 
                     authJob = coroutineScope.launch {
                         try {
-                            val profile = MicrosoftAuthService.loginWithMicrosoft(
-                                onStatus = { msg -> statusMessage = msg },
-                                onDeviceCode = { userCode, verificationUri ->
-                                    deviceUserCode = userCode
-                                    deviceVerificationUri = verificationUri
-                                    // Auto-open the browser for convenience
-                                    try {
-                                        if (Desktop.isDesktopSupported() &&
-                                            Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)
-                                        ) {
-                                            Desktop.getDesktop().browse(URI(verificationUri))
-                                        }
-                                    } catch (_: Exception) {}
-                                }
-                            )
+                            val profile = MicrosoftAuthService.loginWithMicrosoft { msg ->
+                                statusMessage = msg
+                            }
                             onLoggedIn(profile)
                         } catch (e: CancellationException) {
                             // Cancelamento explícito: não exibe mensagem de erro
@@ -249,8 +223,6 @@ fun LoginScreen(
                             errorMessage = e.message ?: "Erro na autenticação com a Microsoft."
                         } finally {
                             isMicrosoftLoading = false
-                            deviceUserCode = null
-                            deviceVerificationUri = null
                             statusMessage = ""
                             authJob = null
                         }
@@ -294,115 +266,27 @@ fun LoginScreen(
                 }
             }
 
-            // Status / Device Code UI while Microsoft auth is running
+            // Status or Cancel option while Microsoft auth is running
             AnimatedVisibility(visible = isMicrosoftLoading) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(top = 16.dp)
                 ) {
-                    val code = deviceUserCode
-                    val uri = deviceVerificationUri
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color(0xFF83B9AD),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = statusMessage,
+                        color = Color(0xFFDCE5DF).copy(alpha = 0.8f),
+                        fontSize = 12.sp
+                    )
 
-                    if (code != null && uri != null) {
-                        // ── Device Code step: show code + link ──────────────
-                        Text(
-                            text = "Acesse o endereço abaixo e insira o código:",
-                            color = Color(0xFFDCE5DF).copy(alpha = 0.75f),
-                            fontSize = 12.sp
-                        )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Verification URI — clickable to open browser again
-                        Text(
-                            text = uri,
-                            color = Color(0xFF83B9AD),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable(role = Role.Button) {
-                                    try {
-                                        if (Desktop.isDesktopSupported() &&
-                                            Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)
-                                        ) {
-                                            Desktop.getDesktop().browse(URI(uri))
-                                        }
-                                    } catch (_: Exception) {}
-                                }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // User code in a styled box
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF0B252E))
-                                .border(1.dp, Color(0xFF83B9AD).copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Text(
-                                text = code,
-                                color = Color(0xFFDCE5DF),
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 4.sp
-                            )
-
-                            Text(
-                                text = "Copiar",
-                                color = Color(0xFF83B9AD),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .clickable(role = Role.Button) {
-                                        clipboard.setText(AnnotatedString(code))
-                                    }
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Waiting spinner
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                color = Color(0xFF83B9AD),
-                                strokeWidth = 2.dp
-                            )
-                            Text(
-                                text = "Aguardando autorização no navegador...",
-                                color = Color(0xFFDCE5DF).copy(alpha = 0.7f),
-                                fontSize = 12.sp
-                            )
-                        }
-                    } else {
-                        // ── Pre-device-code: just spinner + status message ──
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = Color(0xFF83B9AD),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = statusMessage,
-                            color = Color(0xFFDCE5DF).copy(alpha = 0.8f),
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Explicit "Cancelar login Microsoft" button — always visible during MS auth
+                    // Explicit "Cancelar login Microsoft" button
                     Text(
                         text = "Cancelar login Microsoft",
                         color = Color(0xFF83B9AD),
@@ -414,8 +298,6 @@ fun LoginScreen(
                                 authJob?.cancel()
                                 authJob = null
                                 isMicrosoftLoading = false
-                                deviceUserCode = null
-                                deviceVerificationUri = null
                                 statusMessage = ""
                                 errorMessage = null
                             }
