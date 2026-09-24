@@ -17,6 +17,11 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import auth.MicrosoftAuthService
 import auth.MinecraftProfile
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+
+// Minecraft Java username: 3 to 16 alphanumeric characters and underscores
+private val MINECRAFT_USERNAME_REGEX = Regex("^[a-zA-Z0-9_]{3,16}$")
 
 @Composable
 fun LoginScreen(
@@ -79,7 +84,7 @@ fun LoginScreen(
                         errorMessage = null
                     },
                     placeholder = {
-                        Text("Digite seu nome de usuário", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
+                        Text("Ex: Steve_01 (3 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
                     },
                     singleLine = true,
                     enabled = !isLoading,
@@ -94,7 +99,15 @@ fun LoginScreen(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Modo local/offline: não autentica em servidores online protegidos.",
+                    color = Color(0xFFDCE5DF).copy(alpha = 0.5f),
+                    fontSize = 11.sp
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Button(
                     onClick = {
@@ -103,11 +116,21 @@ fun LoginScreen(
                             errorMessage = "Por favor, digite um nome de usuário."
                             return@Button
                         }
-                        // Offline profile
+                        if (trimmed.length < 3 || trimmed.length > 16) {
+                            errorMessage = "O nome deve ter entre 3 e 16 caracteres."
+                            return@Button
+                        }
+                        if (!MINECRAFT_USERNAME_REGEX.matches(trimmed)) {
+                            errorMessage = "O nome pode conter apenas letras, números e sublinhados (_)."
+                            return@Button
+                        }
+
+                        // Strictly validate and safely encode to prevent URL path traversal/manipulation
+                        val safeEncodedName = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.toString())
                         val profile = MinecraftProfile(
                             id = trimmed,
                             name = trimmed,
-                            skinUrl = "https://minotar.net/skin/$trimmed"
+                            skinUrl = "https://minotar.net/skin/$safeEncodedName"
                         )
                         onLoggedIn(profile)
                     },
@@ -160,7 +183,7 @@ fun LoginScreen(
                             }
                             onLoggedIn(profile)
                         } catch (e: Exception) {
-                            errorMessage = e.localizedMessage ?: "Erro na autenticação com a Microsoft"
+                            errorMessage = e.message ?: "Erro na autenticação com a Microsoft."
                         } finally {
                             isLoading = false
                             statusMessage = ""

@@ -1,11 +1,22 @@
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -16,6 +27,7 @@ import ui.CustomTitleBar
 import ui.DashboardScreen
 import ui.GrainGradientBackground
 import ui.LoginScreen
+import util.LauncherPreferences
 import java.awt.Dimension
 
 fun main() = application {
@@ -26,6 +38,9 @@ fun main() = application {
     }
 
     var loggedInProfile by remember { mutableStateOf<MinecraftProfile?>(null) }
+    var isAnimationRunning by remember {
+        mutableStateOf(LauncherPreferences.isBackgroundAnimationEnabled)
+    }
 
     Window(
         onCloseRequest = ::exitApplication,
@@ -61,31 +76,70 @@ fun main() = application {
                 grain = 0.32f,
                 grainSize = 1f,
                 seed = 1f,
-                speed = 1f
+                speed = 1f,
+                isAnimating = isAnimationRunning
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Custom title bar seamlessly blended with the animated gradient background
-                    CustomTitleBar(
-                        onMinimize = {
-                            windowState.isMinimized = true
-                        },
-                        onClose = {
-                            exitApplication()
-                        }
-                    )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Custom title bar seamlessly blended with the animated gradient background
+                        CustomTitleBar(
+                            onMinimize = {
+                                windowState.isMinimized = true
+                            },
+                            onClose = {
+                                exitApplication()
+                            }
+                        )
 
-                    // Main window content area
-                    Box(modifier = Modifier.weight(1f)) {
-                        val currentProfile = loggedInProfile
-                        if (currentProfile == null) {
-                            LoginScreen(
-                                onLoggedIn = { profile ->
-                                    loggedInProfile = profile
-                                }
-                            )
-                        } else {
-                            DashboardScreen(profile = currentProfile)
+                        // Main window content area
+                        Box(modifier = Modifier.weight(1f)) {
+                            val currentProfile = loggedInProfile
+                            if (currentProfile == null) {
+                                LoginScreen(
+                                    onLoggedIn = { profile ->
+                                        loggedInProfile = profile
+                                    }
+                                )
+                            } else {
+                                DashboardScreen(
+                                    profile = currentProfile,
+                                    onLogout = {
+                                        loggedInProfile = null
+                                    }
+                                )
+                            }
                         }
+                    }
+
+                    // Discrete toggle control in bottom-right corner for pausing/resuming background animation
+                    val toggleLabel = if (isAnimationRunning) "Pausar animação do fundo" else "Retomar animação do fundo"
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = 16.dp, end = 16.dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF031419).copy(alpha = 0.5f))
+                            .border(1.dp, Color(0xFF83B9AD).copy(alpha = 0.3f), CircleShape)
+                            .clickable(
+                                role = Role.Button,
+                                onClickLabel = toggleLabel
+                            ) {
+                                val newState = !isAnimationRunning
+                                isAnimationRunning = newState
+                                LauncherPreferences.isBackgroundAnimationEnabled = newState
+                            }
+                            .semantics {
+                                contentDescription = toggleLabel
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isAnimationRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = toggleLabel,
+                            tint = Color(0xFFDCE5DF).copy(alpha = 0.85f),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             }

@@ -11,13 +11,16 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
+import net.HttpClientFactory
 import okhttp3.Request
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
 import kotlin.math.cos
 import kotlin.math.sin
+
+private val skinImageCache = ConcurrentHashMap<String, BufferedImage>()
 
 /**
  * Renders a 3D isometric Minecraft player head extracted from the skin texture.
@@ -33,21 +36,30 @@ fun MinecraftHead3D(
     var skinBitmap by remember(skinUrl, playerName) { mutableStateOf<BufferedImage?>(null) }
 
     LaunchedEffect(skinUrl, playerName) {
+        val cacheKey = skinUrl ?: "steve:$playerName"
+        val cached = skinImageCache[cacheKey]
+        if (cached != null) {
+            skinBitmap = cached
+            return@LaunchedEffect
+        }
+
         withContext(Dispatchers.IO) {
             val img = if (!skinUrl.isNullOrBlank()) {
                 try {
-                    val client = OkHttpClient()
                     val req = Request.Builder().url(skinUrl).build()
-                    client.newCall(req).execute().use { res ->
-                        res.body?.byteStream()?.let { ImageIO.read(it) }
+                    HttpClientFactory.client.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            res.body?.byteStream()?.let { ImageIO.read(it) }
+                        } else null
                     }
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     null
                 }
-            } else {
-                null
-            }
-            skinBitmap = img ?: generateDefaultSteveSkin(playerName)
+            } else null
+
+            val result = img ?: generateDefaultSteveSkin(playerName)
+            skinImageCache[cacheKey] = result
+            skinBitmap = result
         }
     }
 

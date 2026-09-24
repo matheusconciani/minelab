@@ -2,6 +2,7 @@ package ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -10,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -17,12 +19,13 @@ import auth.MinecraftProfile
 
 @Composable
 fun DashboardScreen(
-    profile: MinecraftProfile
+    profile: MinecraftProfile,
+    onLogout: () -> Unit
 ) {
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // User profile badge on the top-right corner
+        // User profile badge on the top-right corner - clickable for logout
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -30,6 +33,12 @@ fun DashboardScreen(
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color(0xFF031419).copy(alpha = 0.6f))
                 .border(1.dp, Color(0xFF83B9AD).copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .clickable(
+                    role = Role.Button,
+                    onClickLabel = "Sair da conta ${profile.name}"
+                ) {
+                    onLogout()
+                }
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -44,7 +53,7 @@ fun DashboardScreen(
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = if (profile.id == profile.name) "Conta Local" else "Microsoft",
+                    text = if (profile.id == profile.name) "Conta Local (Sair)" else "Microsoft (Sair)",
                     color = Color(0xFF83B9AD).copy(alpha = 0.8f),
                     fontSize = 11.sp
                 )

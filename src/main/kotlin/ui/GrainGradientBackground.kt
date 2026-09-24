@@ -45,11 +45,13 @@ fun GrainGradientBackground(
     grainSize: Float = 1f,
     seed: Float = 1f,
     speed: Float = 1f,
+    isAnimating: Boolean = true,
     content: @Composable () -> Unit
 ) {
     var elapsedSeconds by remember { mutableStateOf(0f) }
 
-    LaunchedEffect(speed) {
+    LaunchedEffect(speed, isAnimating) {
+        if (!isAnimating) return@LaunchedEffect
         var lastTimeNanos = 0L
         while (true) {
             withInfiniteAnimationFrameMillis { frameTimeMillis ->
