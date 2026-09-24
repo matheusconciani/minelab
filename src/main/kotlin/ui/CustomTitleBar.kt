@@ -50,6 +50,7 @@ fun WindowScope.CustomTitleBar(
             )
 
             // Window controls: Minimize & Close (No maximize as specified)
+            // Os ícones permanecem claros para contraste independente sobre o fundo escuro à direita
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -65,7 +66,7 @@ fun WindowScope.CustomTitleBar(
                     Icon(
                         imageVector = Icons.Default.Minimize,
                         contentDescription = "Minimizar",
-                        tint = Color(0xFF031419).copy(alpha = 0.85f),
+                        tint = Color(0xFFDCE5DF).copy(alpha = 0.9f),
                         modifier = Modifier.size(15.dp).padding(bottom = 6.dp)
                     )
                 }
@@ -81,7 +82,7 @@ fun WindowScope.CustomTitleBar(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Fechar",
-                        tint = Color(0xFF031419).copy(alpha = 0.85f),
+                        tint = Color(0xFFDCE5DF).copy(alpha = 0.9f),
                         modifier = Modifier.size(15.dp)
                     )
                 }

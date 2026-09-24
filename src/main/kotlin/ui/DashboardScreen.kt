@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import auth.MinecraftProfile
@@ -32,9 +33,9 @@ fun DashboardScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 16.dp, end = 20.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF031419).copy(alpha = 0.6f))
-                .border(1.dp, Color(0xFF83B9AD).copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF031419).copy(alpha = 0.65f))
+                .border(1.dp, Color(0xFF83B9AD).copy(alpha = 0.3f), RoundedCornerShape(14.dp))
                 .clickable(
                     role = Role.Button,
                     onClickLabel = "Sair da conta ${profile.name}"
@@ -49,19 +50,25 @@ fun DashboardScreen(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(
-                horizontalAlignment = Alignment.End
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.widthIn(max = 160.dp)
             ) {
                 Text(
                     text = "Logado como",
-                    color = Color(0xFFDCE5DF).copy(alpha = 0.7f),
+                    color = Color(0xFFDCE5DF).copy(alpha = 0.65f),
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Normal
+                    fontWeight = FontWeight.Normal,
+                    letterSpacing = 0.2.sp
                 )
                 Text(
                     text = profile.name,
                     color = Color(0xFFDCE5DF),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.3.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -69,7 +76,7 @@ fun DashboardScreen(
             MinecraftHead3D(
                 skinUrl = profile.skinUrl,
                 playerName = profile.name,
-                size = 42.dp
+                size = 44.dp
             )
         }
 

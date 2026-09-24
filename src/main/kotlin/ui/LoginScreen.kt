@@ -6,6 +6,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -14,6 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Job
@@ -24,8 +27,8 @@ import auth.MinecraftProfile
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
-// Minecraft Java username: 3 to 16 alphanumeric characters and underscores
-private val MINECRAFT_USERNAME_REGEX = Regex("^[a-zA-Z0-9_]{3,16}$")
+// Minecraft Java username: mais de 3 e menos de 17 caracteres (entre 4 e 16 caracteres), alfanumérico e sublinhados
+private val MINECRAFT_USERNAME_REGEX = Regex("^[a-zA-Z0-9_]{4,16}$")
 
 @Composable
 fun LoginScreen(
@@ -33,6 +36,7 @@ fun LoginScreen(
 ) {
     var username by remember { mutableStateOf("") }
     var isMicrosoftLoading by remember { mutableStateOf(false) }
+    var isLocalLoggingIn by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
@@ -44,6 +48,41 @@ fun LoginScreen(
             authJob?.cancel()
             authJob = null
         }
+    }
+
+    // Unified validation and login function used by both button click and Enter key
+    fun performLocalLogin() {
+        if (isLocalLoggingIn) return
+
+        val trimmed = username.trim()
+        if (trimmed.isEmpty()) {
+            errorMessage = "Por favor, digite um nome de usuário."
+            return
+        }
+        if (trimmed.length < 4 || trimmed.length > 16) {
+            errorMessage = "O nome deve ter entre 4 e 16 caracteres."
+            return
+        }
+        if (!MINECRAFT_USERNAME_REGEX.matches(trimmed)) {
+            errorMessage = "O nome pode conter apenas letras, números e sublinhados (_)."
+            return
+        }
+
+        isLocalLoggingIn = true
+
+        // Cancel ongoing Microsoft auth if any before proceeding with local login
+        authJob?.cancel()
+        authJob = null
+        isMicrosoftLoading = false
+        statusMessage = ""
+
+        val safeEncodedName = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.toString())
+        val profile = MinecraftProfile(
+            id = trimmed,
+            name = trimmed,
+            skinUrl = "https://minotar.net/skin/$safeEncodedName"
+        )
+        onLoggedIn(profile)
     }
 
     Box(
@@ -76,7 +115,7 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // Modo Local / Offline: SEMPRE DISPONÍVEL E EDITÁVEL
+            // Modo Local: SEMPRE DISPONÍVEL E EDITÁVEL
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.Start
@@ -97,10 +136,16 @@ fun LoginScreen(
                         errorMessage = null
                     },
                     placeholder = {
-                        Text("Ex: Steve_01 (3 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
+                        Text("Ex: Steve_01 (4 a 16 caracteres)", color = Color(0xFFDCE5DF).copy(alpha = 0.4f), fontSize = 14.sp)
                     },
                     singleLine = true,
-                    enabled = true, // Nunca desabilita durante tentativa Microsoft
+                    enabled = !isLocalLoggingIn, // Continua editável durante tentativa Microsoft
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            performLocalLogin()
+                        }
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color(0xFFDCE5DF),
@@ -112,51 +157,17 @@ fun LoginScreen(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = "Modo local/offline: não autentica em servidores online protegidos.",
-                    color = Color(0xFFDCE5DF).copy(alpha = 0.5f),
-                    fontSize = 11.sp
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 val isUsernameValid = username.trim().run {
-                    length in 3..16 && MINECRAFT_USERNAME_REGEX.matches(this)
+                    length in 4..16 && MINECRAFT_USERNAME_REGEX.matches(this)
                 }
 
                 Button(
                     onClick = {
-                        val trimmed = username.trim()
-                        if (trimmed.isEmpty()) {
-                            errorMessage = "Por favor, digite um nome de usuário."
-                            return@Button
-                        }
-                        if (trimmed.length < 3 || trimmed.length > 16) {
-                            errorMessage = "O nome deve ter entre 3 e 16 caracteres."
-                            return@Button
-                        }
-                        if (!MINECRAFT_USERNAME_REGEX.matches(trimmed)) {
-                            errorMessage = "O nome pode conter apenas letras, números e sublinhados (_)."
-                            return@Button
-                        }
-
-                        // Cancel ongoing Microsoft auth if any before proceeding with local login
-                        authJob?.cancel()
-                        authJob = null
-                        isMicrosoftLoading = false
-                        statusMessage = ""
-
-                        val safeEncodedName = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.toString())
-                        val profile = MinecraftProfile(
-                            id = trimmed,
-                            name = trimmed,
-                            skinUrl = "https://minotar.net/skin/$safeEncodedName"
-                        )
-                        onLoggedIn(profile)
+                        performLocalLogin()
                     },
-                    enabled = isUsernameValid, // Sempre habilitado se o nome for válido
+                    enabled = isUsernameValid && !isLocalLoggingIn,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(44.dp),
@@ -194,7 +205,7 @@ fun LoginScreen(
             // Microsoft Login Button
             Button(
                 onClick = {
-                    if (isMicrosoftLoading) return@Button
+                    if (isMicrosoftLoading || isLocalLoggingIn) return@Button
                     isMicrosoftLoading = true
                     errorMessage = null
                     statusMessage = "Iniciando login com a Microsoft..."
@@ -206,7 +217,7 @@ fun LoginScreen(
                             }
                             onLoggedIn(profile)
                         } catch (e: CancellationException) {
-                            // Cancelamento explícito: não exibe mensagem de erro assustadora
+                            // Cancelamento explícito: não exibe mensagem de erro
                             errorMessage = null
                         } catch (e: Exception) {
                             errorMessage = e.message ?: "Erro na autenticação com a Microsoft."
@@ -217,7 +228,7 @@ fun LoginScreen(
                         }
                     }
                 },
-                enabled = !isMicrosoftLoading, // Desabilita apenas a si próprio para evitar cliques simultâneos
+                enabled = !isMicrosoftLoading && !isLocalLoggingIn,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(46.dp),
